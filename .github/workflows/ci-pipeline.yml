@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-deploy:
-    runs-on: windows-latest
+    runs-on: windows-latest  # Usamos Windows para compatibilidad con .NET Framework
 
     steps:
       - name: Checkout code
@@ -17,20 +17,24 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
-          dotnet-version: '6.0.x'  # Cambia a '4.8' si usas .NET Framework 4.8
+          dotnet-version: '6.0.x'  # Ajusta a tu versión de .NET (ej. '5.0.x', '7.0.x')
 
       - name: Restore dependencies
-        run: dotnet restore MiAplicacion.sln  # Cambia al nombre de tu solución
+        run: dotnet restore MiAplicacion.sln  # Reemplaza con el nombre de tu archivo de solución
 
       - name: Build
         run: dotnet build MiAplicacion.sln --configuration Release --no-restore
 
       - name: Run tests
         run: dotnet test --no-build --verbosity normal
-        continue-on-error: true  # Ignora errores si no hay pruebas aún
+        continue-on-error: true  # Ignora si no hay pruebas aún
 
       - name: Publish
         run: dotnet publish MiAplicacion.csproj --configuration Release --output ./publish
+        # Para .NET Framework, usa: msbuild MiAplicacion.sln /p:Configuration=Release /p:DeployOnBuild=true /p:PublishProfile=FolderProfile
+
+      - name: List publish directory
+        run: dir ./publish/  # Verifica que el directorio publish contenga archivos
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
@@ -39,4 +43,4 @@ jobs:
           path: ./publish/
 
       - name: Deploy (Placeholder)
-        run: echo "Configura aquí el despliegue según tu entorno"
+        run: echo "Configura aquí los pasos de despliegue (ej. copiar a servidor, generar instalador)"
