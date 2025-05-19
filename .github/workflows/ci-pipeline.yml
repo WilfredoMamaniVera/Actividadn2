@@ -1,46 +1,203 @@
-name: CI Pipeline
+name: CI Pipeline para Módulo de Trabajadores
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
+  # Permitir ejecución manual desde la interfaz de GitHub
+  workflow_dispatch:
 
 jobs:
-  build-and-deploy:
-    runs-on: windows-latest  # Usamos Windows para compatibilidad con .NET Framework
-
+  # Trabajo 1: Validación y pruebas
+  test:
+    name: Test y Validación
+    runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: '6.0.x'  # Ajusta a tu versión de .NET (ej. '5.0.x', '7.0.x')
-
-      - name: Restore dependencies
-        run: dotnet restore MiAplicacion.sln  # Reemplaza con el nombre de tu archivo de solución
-
-      - name: Build
-        run: dotnet build MiAplicacion.sln --configuration Release --no-restore
-
-      - name: Run tests
-        run: dotnet test --no-build --verbosity normal
-        continue-on-error: true  # Ignora si no hay pruebas aún
-
-      - name: Publish
-        run: dotnet publish MiAplicacion.csproj --configuration Release --output ./publish
-        # Para .NET Framework, usa: msbuild MiAplicacion.sln /p:Configuration=Release /p:DeployOnBuild=true /p:PublishProfile=FolderProfile
-
-      - name: List publish directory
-        run: dir ./publish/  # Verifica que el directorio publish contenga archivos
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: published-app
-          path: ./publish/
-
-      - name: Deploy (Placeholder)
-        run: echo "Configura aquí los pasos de despliegue (ej. copiar a servidor, generar instalador)"
+    - name: Checkout del código
+      uses: actions/checkout@v3
+      
+    - name: Configurar .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '8.0.x'
+    
+    - name: Restaurar dependencias
+      run: dotnet restore
+    
+    - name: Ejecutar análisis de código con StyleCop
+      run: |
+        dotnet tool install -g dotnet-stylecop
+        dotnet stylecop
+      continue-on-error: true
+    
+    - name: Ejecutar pruebas unitarias
+      run: dotnet test tests/ModuloTrabajadores.UnitTests --configuration Release --no-restore --verbosity normal
+    
+    - name: Ejecutar pruebas de integración
+      run: dotnet test tests/ModuloTrabajadores.IntegrationTests --configuration Release --no-restore --verbosity normal
+    
+    - name: Generar informe de cobertura
+      run: |
+        dotnet tool install -g dotnet-reportgenerator-globaltool
+        dotnet test --collect:"XPlat Code Coverage"
+        reportgenerator -reports:**/coverage.cobertura.xml -targetdir:coveragereport -reporttypes:Html
+    
+    - name: Subir informe de cobertura como artefacto
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-report
+        path: coveragereport/
+    
+  # Trabajo 2: Compilación (build)
+  build:
+    name: Compilación
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant: [Basic, Standard, Premium, Enterprise]
+        configuration: [Release]
+    
+    steps:
+    - name: Checkout del código
+      uses: actions/checkout@v3
+      
+    - name: Configurar .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '8.0.x'
+    
+    - name: Restaurar dependencias
+      run: dotnet restore
+    
+    - name: Compilar proyecto - Variante ${{ matrix.variant }}
+      run: dotnet publish src/ModuloTrabajadores.API -c ${{ matrix.configuration }} -o publish/ModuloTrabajadores-${{ matrix.variant }} /p:FeatureVariant=${{ matrix.variant }}
+    
+    - name: Subir artefacto de compilación
+      uses: actions/upload-artifact@v3
+      with:
+        name: ModuloTrabajadores-${{ matrix.variant }}-${{ matrix.configuration }}
+        path: publish/ModuloTrabajadores-${{ matrix.variant }}
+  
+  # Trabajo 3: Pruebas Funcionales
+  functional-tests:
+    name: Pruebas Funcionales
+    needs: build
+    runs-on: ubuntu-latest
+    
+    services:
+      # Servicio de SQL Server para pruebas
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2019-latest
+        env:
+          ACCEPT_EULA: Y
+          SA_PASSWORD: YourStrong!Passw0rd
+        ports:
+          - 1433:1433
+    
+    steps:
+    - name: Checkout del código
+      uses: actions/checkout@v3
+      
+    - name: Configurar .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '8.0.x'
+    
+    - name: Restaurar dependencias
+      run: dotnet restore
+      
+    - name: Descargar artefacto de compilación (versión básica para pruebas)
+      uses: actions/download-artifact@v3
+      with:
+        name: ModuloTrabajadores-Basic-Release
+        path: deploy/
+    
+    - name: Ejecutar migraciones de base de datos
+      run: |
+        dotnet tool install --global dotnet-ef
+        cd src/ModuloTrabajadores.Infrastructure
+        dotnet ef database update --connection "Server=localhost,1433;Database=ModuloTrabajadores;User=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=true;"
+    
+    - name: Iniciar API para pruebas
+      run: |
+        cd deploy/
+        dotnet ModuloTrabajadores.API.dll --urls=http://localhost:5000 &
+        sleep 10
+    
+    - name: Ejecutar pruebas funcionales
+      run: dotnet test tests/ModuloTrabajadores.FunctionalTests --configuration Release --no-restore --verbosity normal
+      env:
+        API_BASE_URL: http://localhost:5000
+  
+  # Trabajo 4: Despliegue a entorno de desarrollo
+  deploy-dev:
+    name: Despliegue a Desarrollo
+    if: github.ref == 'refs/heads/develop'
+    needs: functional-tests
+    runs-on: ubuntu-latest
+    environment: development
+    
+    steps:
+    - name: Configurar Azure CLI
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    - name: Descargar artefactos de compilación
+      uses: actions/download-artifact@v3
+      with:
+        path: builds/
+    
+    - name: Desplegar a Azure App Service (Desarrollo)
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: modulotrabajadores-dev
+        package: builds/ModuloTrabajadores-Basic-Release/
+        slot-name: staging
+    
+    - name: Ejecutar pruebas de humo
+      run: |
+        curl -s -o /dev/null -w "%{http_code}" https://modulotrabajadores-dev-staging.azurewebsites.net/api/health
+    
+    - name: Swap slots
+      run: |
+        az webapp deployment slot swap -g ModuloTrabajadoresResourceGroup -n modulotrabajadores-dev --slot staging --target-slot production
+      if: ${{ success() }}
+    
+  # Trabajo 5: Despliegue a entorno de producción
+  deploy-prod:
+    name: Despliegue a Producción
+    if: github.ref == 'refs/heads/main'
+    needs: functional-tests
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - name: Configurar Azure CLI
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    - name: Descargar artefactos de compilación
+      uses: actions/download-artifact@v3
+      with:
+        path: builds/
+    
+    - name: Desplegar a Azure App Service (Producción)
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: modulotrabajadores-prod
+        package: builds/ModuloTrabajadores-Basic-Release/
+        slot-name: staging
+    
+    - name: Ejecutar pruebas de humo
+      run: |
+        curl -s -o /dev/null -w "%{http_code}" https://modulotrabajadores-prod-staging.azurewebsites.net/api/health
+    
+    - name: Swap slots
+      run: |
+        az webapp deployment slot swap -g ModuloTrabajadoresResourceGroup -n modulotrabajadores-prod --slot staging --target-slot production
+      if: ${{ success() }}
